@@ -6,6 +6,8 @@ on:
       - dev
     paths-ignore:
       - "**/*.md"
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -47,6 +49,48 @@ jobs:
       - name: Validate fork policy
         run: bash fork/scripts/policy-check.sh
 
+      - name: Validate release metadata
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source buildroot-external/meta
+
+          if [[ -z "${VERSION_SUFFIX}" ]]; then
+            version="${VERSION_MAJOR}.${VERSION_MINOR}"
+          else
+            version="${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_SUFFIX}"
+          fi
+
+          if [[ "${version}" != "${RELEASE_TAG}" ]]; then
+            echo "::error::Release tag ${RELEASE_TAG} does not match buildroot-external/meta version ${version}."
+            exit 1
+          fi
+
+          if [[ "${RELEASE_PRERELEASE}" == "true" ]]; then
+            if [[ "${DEPLOYMENT}" != "staging" ]]; then
+              echo "::error::Prerelease requires DEPLOYMENT=staging."
+              exit 1
+            fi
+            if [[ ! "${VERSION_SUFFIX}" =~ ^rc[0-9]+$ ]]; then
+              echo "::error::Prerelease requires VERSION_SUFFIX=rcN."
+              exit 1
+            fi
+          else
+            if [[ "${DEPLOYMENT}" != "production" ]]; then
+              echo "::error::Stable release requires DEPLOYMENT=production."
+              exit 1
+            fi
+            if [[ -n "${VERSION_SUFFIX}" ]]; then
+              echo "::error::Stable release requires an empty VERSION_SUFFIX."
+              exit 1
+            fi
+          fi
+
       - name: Compute Buildroot cache key
         id: cache_key
         shell: bash
@@ -71,6 +115,7 @@ jobs:
             haos-cc-${{ runner.os }}-${{ matrix.target }}-
 
       - name: Set unique development version
+        if: github.event_name != 'release'
         shell: bash
         run: |
           VERSION_SUFFIX="dev${GITHUB_RUN_NUMBER}"
@@ -80,6 +125,7 @@ jobs:
       - name: Configure RAUC signing key when repository secrets exist
         shell: bash
         env:
+          EVENT_NAME: ${{ github.event_name }}
           RAUC_CERTIFICATE_B64: ${{ secrets.RAUC_CERTIFICATE_B64 }}
           RAUC_PRIVATE_KEY_B64: ${{ secrets.RAUC_PRIVATE_KEY_B64 }}
           RAUC_CERTIFICATE: ${{ secrets.RAUC_CERTIFICATE }}
@@ -118,6 +164,10 @@ jobs:
             printf '%s\n' '-----BEGIN PRIVATE KEY-----' "${RAUC_PRIVATE_KEY}" '-----END PRIVATE KEY-----' > key.pem
             echo "Using legacy repository RAUC signing key. Migrate to the *_B64 secrets."
           else
+            if [[ "${EVENT_NAME}" == "release" ]]; then
+              echo "::error::A GitHub release requires a persistent RAUC signing key. Configure the *_B64 repository secrets first."
+              exit 1
+            fi
             echo "No persistent RAUC key configured; HAOS will generate a development self-signed key for this build."
             exit 0
           fi
@@ -131,6 +181,14 @@ jobs:
           if [[ "${cert_pub}" != "${key_pub}" ]]; then
             echo "::error::RAUC certificate and private key do not belong together."
             exit 1
+          fi
+
+          if [[ "${EVENT_NAME}" == "release" ]]; then
+            min_validity_seconds=$((760 * 24 * 60 * 60))
+            if ! openssl x509 -in cert.pem -checkend "${min_validity_seconds}" -noout; then
+              echo "::error::RAUC signing certificate expires in less than 760 days; refusing release build."
+              exit 1
+            fi
           fi
 
           openssl x509 -in cert.pem -noout -subject -issuer -dates
@@ -184,3 +242,72 @@ jobs:
         if: always()
         shell: bash
         run: rm -f cert.pem key.pem
+
+  publish_release:
+    name: Publish GitHub release assets
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Proxmox build artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: haos-proxmox-qcow2-${{ github.sha }}
+          path: release-assets/ova
+
+      - name: Download USB build artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: haos-usb-img-${{ github.sha }}
+          path: release-assets/generic
+
+      - name: Verify exact release asset set
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets/publish
+
+          mapfile -t ova_images < <(find release-assets/ova -type f -name 'haos_ova-*.qcow2.xz' -print)
+          mapfile -t ova_bundles < <(find release-assets/ova -type f -name 'haos_ova-*.raucb' -print)
+          mapfile -t generic_images < <(find release-assets/generic -type f -name 'haos_generic-x86-64-*.img.xz' -print)
+          mapfile -t generic_bundles < <(find release-assets/generic -type f -name 'haos_generic-x86-64-*.raucb' -print)
+
+          if [[ ${#ova_images[@]} -ne 1 || ${#ova_bundles[@]} -ne 1 || ${#generic_images[@]} -ne 1 || ${#generic_bundles[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one install image and one RAUC bundle for each supported target."
+            exit 1
+          fi
+
+          expected_ova_image="haos_ova-${RELEASE_TAG}.qcow2.xz"
+          expected_ova_bundle="haos_ova-${RELEASE_TAG}.raucb"
+          expected_generic_image="haos_generic-x86-64-${RELEASE_TAG}.img.xz"
+          expected_generic_bundle="haos_generic-x86-64-${RELEASE_TAG}.raucb"
+
+          [[ "$(basename "${ova_images[0]}")" == "${expected_ova_image}" ]] || { echo "::error::Unexpected OVA filename."; exit 1; }
+          [[ "$(basename "${ova_bundles[0]}")" == "${expected_ova_bundle}" ]] || { echo "::error::Unexpected OVA RAUC filename."; exit 1; }
+          [[ "$(basename "${generic_images[0]}")" == "${expected_generic_image}" ]] || { echo "::error::Unexpected generic image filename."; exit 1; }
+          [[ "$(basename "${generic_bundles[0]}")" == "${expected_generic_bundle}" ]] || { echo "::error::Unexpected generic RAUC filename."; exit 1; }
+
+          xz -t "${ova_images[0]}"
+          xz -t "${generic_images[0]}"
+
+          cp "${ova_images[0]}" "${ova_bundles[0]}" "${generic_images[0]}" "${generic_bundles[0]}" release-assets/publish/
+          (
+            cd release-assets/publish
+            sha256sum haos_* > SHA256SUMS
+          )
+
+          printf 'Release assets:\n'
+          find release-assets/publish -maxdepth 1 -type f -printf '  %f\n' | sort
+
+      - name: Upload assets to existing GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release upload "${RELEASE_TAG}" release-assets/publish/* --clobber --repo "${GITHUB_REPOSITORY}"

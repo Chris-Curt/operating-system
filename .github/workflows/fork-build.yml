@@ -1,0 +1,126 @@
+name: Fork build
+
+on:
+  push:
+    branches:
+      - dev
+    paths-ignore:
+      - "**/*.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: ova
+            output_dir: output_ova
+            artifact_name: haos-proxmox-qcow2
+            image_glob: output_ova/images/haos_ova-*.qcow2.xz
+            rauc_glob: output_ova/images/haos_ova-*.raucb
+          - target: generic-x86-64
+            output_dir: output_generic_x86_64
+            artifact_name: haos-usb-img
+            image_glob: output_generic_x86_64/images/haos_generic-x86-64-*.img.xz
+            rauc_glob: output_generic_x86_64/images/haos_generic-x86-64-*.raucb
+    env:
+      CACHE_DIR: /mnt/haos-cache
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+
+      - name: Validate fork policy
+        run: bash fork/scripts/policy-check.sh
+
+      - name: Set unique development version
+        shell: bash
+        run: |
+          VERSION_SUFFIX="dev${GITHUB_RUN_NUMBER}"
+          sed -i -E "s/(^VERSION_SUFFIX=\").*(\"$)/\1${VERSION_SUFFIX}\2/" buildroot-external/meta
+          grep '^VERSION_' buildroot-external/meta
+
+      - name: Configure RAUC signing key when repository secrets exist
+        shell: bash
+        env:
+          RAUC_CERTIFICATE: ${{ secrets.RAUC_CERTIFICATE }}
+          RAUC_PRIVATE_KEY: ${{ secrets.RAUC_PRIVATE_KEY }}
+        run: |
+          if [[ -n "${RAUC_CERTIFICATE}" && -z "${RAUC_PRIVATE_KEY}" ]] || \
+             [[ -z "${RAUC_CERTIFICATE}" && -n "${RAUC_PRIVATE_KEY}" ]]; then
+            echo "::error::RAUC_CERTIFICATE and RAUC_PRIVATE_KEY must either both be configured or both be absent."
+            exit 1
+          fi
+
+          if [[ -n "${RAUC_CERTIFICATE}" ]]; then
+            printf '%s\n' '-----BEGIN CERTIFICATE-----' "${RAUC_CERTIFICATE}" '-----END CERTIFICATE-----' > cert.pem
+            printf '%s\n' '-----BEGIN PRIVATE KEY-----' "${RAUC_PRIVATE_KEY}" '-----END PRIVATE KEY-----' > key.pem
+            chmod 600 key.pem
+            echo "Using repository RAUC signing key."
+          else
+            echo "No persistent RAUC key configured; local HAOS build logic will use a development self-signed key."
+          fi
+
+      - name: Free disk space and prepare build directories
+        shell: bash
+        env:
+          OUTPUT_DIR: ${{ matrix.output_dir }}
+        run: |
+          sudo rm -rf /usr/local/lib/android/sdk/ndk
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo mkdir -p /mnt/haos-output /mnt/haos-cache
+          sudo chown -R "$(id -u):$(id -g)" /mnt/haos-output /mnt/haos-cache
+          ln -s /mnt/haos-output "${GITHUB_WORKSPACE}/${OUTPUT_DIR}"
+          df -h
+
+      - name: Build HAOS image
+        shell: bash
+        run: bash fork/scripts/build-local.sh "${{ matrix.target }}" .
+
+      - name: Verify required artifacts
+        shell: bash
+        env:
+          IMAGE_GLOB: ${{ matrix.image_glob }}
+          RAUC_GLOB: ${{ matrix.rauc_glob }}
+          OUTPUT_DIR: ${{ matrix.output_dir }}
+        run: |
+          mapfile -t images < <(compgen -G "${IMAGE_GLOB}" || true)
+          mapfile -t bundles < <(compgen -G "${RAUC_GLOB}" || true)
+
+          if [[ ${#images[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one install image matching ${IMAGE_GLOB}; found ${#images[@]}."
+            exit 1
+          fi
+          if [[ ${#bundles[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one RAUC bundle matching ${RAUC_GLOB}; found ${#bundles[@]}."
+            exit 1
+          fi
+
+          xz -t "${images[0]}"
+          sha256sum "${images[0]}" "${bundles[0]}" | tee "${OUTPUT_DIR}/SHA256SUMS"
+
+      - name: Upload install image and update bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
+          name: ${{ matrix.artifact_name }}-${{ github.sha }}
+          path: |
+            ${{ matrix.image_glob }}
+            ${{ matrix.rauc_glob }}
+            ${{ matrix.output_dir }}/SHA256SUMS

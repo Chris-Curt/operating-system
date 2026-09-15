@@ -4,12 +4,14 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
+  prepare-release-meta.sh dev
   prepare-release-meta.sh stable
   prepare-release-meta.sh rc <number>
 
 Examples:
   bash fork/scripts/prepare-release-meta.sh rc 1
   bash fork/scripts/prepare-release-meta.sh stable
+  bash fork/scripts/prepare-release-meta.sh dev
 EOF
 }
 
@@ -26,6 +28,14 @@ fi
 source "${META}"
 
 case "${MODE}" in
+  dev)
+    if [[ -n "${RC_NUMBER}" ]]; then
+      usage >&2
+      exit 2
+    fi
+    NEW_SUFFIX="dev0"
+    NEW_DEPLOYMENT="development"
+    ;;
   stable)
     if [[ -n "${RC_NUMBER}" ]]; then
       usage >&2
@@ -92,13 +102,22 @@ else
   VERSION="${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_SUFFIX}"
 fi
 
-echo "Prepared release metadata:"
+echo "Prepared metadata:"
 echo "  version:    ${VERSION}"
 echo "  deployment: ${DEPLOYMENT}"
 echo
-echo "Review and commit buildroot-external/meta before creating the GitHub release."
-if [[ "${MODE}" == "rc" ]]; then
-  echo "Create GitHub tag/release '${VERSION}' and mark it as a prerelease."
-else
-  echo "Create GitHub tag/release '${VERSION}' as a normal stable release."
-fi
+
+case "${MODE}" in
+  rc)
+    echo "Review and commit buildroot-external/meta before creating the GitHub prerelease."
+    echo "Create GitHub tag/release '${VERSION}' and mark it as a prerelease."
+    ;;
+  stable)
+    echo "Review and commit buildroot-external/meta before creating the GitHub release."
+    echo "Create GitHub tag/release '${VERSION}' as a normal stable release."
+    ;;
+  dev)
+    echo "Review and commit buildroot-external/meta before resuming normal development."
+    echo "The CI workflow will replace dev0 with a unique dev suffix for each development build."
+    ;;
+esac

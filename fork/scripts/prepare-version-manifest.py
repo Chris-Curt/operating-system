@@ -56,17 +56,24 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def validate_version(value: str, label: str) -> None:
+def validate_release_version(value: str, label: str) -> None:
     if not re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z._+-]*", value):
         raise SystemExit(f"ERROR: Invalid {label}: {value!r}")
 
 
+def validate_container_tag(value: str, label: str) -> None:
+    if len(value) > 128 or not re.fullmatch(r"[0-9A-Za-z_][0-9A-Za-z_.-]*", value):
+        raise SystemExit(
+            f"ERROR: Invalid Docker-compatible {label}: {value!r}"
+        )
+
+
 def main() -> None:
     args = parse_args()
-    validate_version(args.os_version, "OS version")
-    validate_version(args.supervisor_version, "Supervisor version")
+    validate_release_version(args.os_version, "OS version")
+    validate_container_tag(args.supervisor_version, "Supervisor version")
     if args.core_version:
-        validate_version(args.core_version, "Core version")
+        validate_container_tag(args.core_version, "Core version")
     if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}[A-Za-z0-9])?", args.github_owner):
         raise SystemExit(f"ERROR: Invalid GitHub owner: {args.github_owner!r}")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", args.os_repo):

@@ -15,9 +15,9 @@ Build outputs:
     output_generic_x86_64/images/haos_generic-x86-64-*.img.xz
     output_generic_x86_64/images/haos_generic-x86-64-*.raucb
 
-The upstream scripts/enter.sh always mounts the repository path `output` as
-/build/output. This helper safely points that path at a target-specific host
-output directory for each build.
+The upstream scripts/enter.sh bind-mounts the entire repository as /build.
+This helper therefore uses a relative repository symlink (`output -> output_*`)
+so the target remains valid both on the host and inside the build container.
 EOF
 }
 
@@ -60,8 +60,17 @@ cleanup_output_link() {
 trap cleanup_output_link EXIT
 
 prepare_output_link() {
-  local target_dir="$1"
+  local target_name="$1"
+  local target_dir="${REPO}/${target_name}"
   local resolved=""
+
+  case "$target_name" in
+    output_ova|output_generic_x86_64) ;;
+    *)
+      echo "ERROR: Unsupported managed output target: ${target_name}" >&2
+      exit 1
+      ;;
+  esac
 
   if [[ -L "$DEFAULT_OUTPUT" ]]; then
     resolved="$(readlink -f "$DEFAULT_OUTPUT" || true)"
@@ -82,7 +91,7 @@ prepare_output_link() {
   fi
 
   mkdir -p "$target_dir"
-  ln -s "$target_dir" "$DEFAULT_OUTPUT"
+  ln -s "$target_name" "$DEFAULT_OUTPUT"
   OUTPUT_LINK_ACTIVE=true
 }
 
@@ -93,20 +102,20 @@ finish_output_link() {
 build_target() {
   local label="$1"
   local make_target="$2"
-  local target_dir="$3"
+  local target_name="$3"
 
   echo "=== Building ${label} ==="
-  prepare_output_link "$target_dir"
+  prepare_output_link "$target_name"
   scripts/enter.sh make "$make_target"
   finish_output_link
 }
 
 build_ova() {
-  build_target "OVA/QCOW2 for Proxmox" "ova" "${REPO}/output_ova"
+  build_target "OVA/QCOW2 for Proxmox" "ova" "output_ova"
 }
 
 build_generic() {
-  build_target "generic x86-64 direct disk image" "generic_x86_64" "${REPO}/output_generic_x86_64"
+  build_target "generic x86-64 direct disk image" "generic_x86_64" "output_generic_x86_64"
 }
 
 case "$TARGET" in

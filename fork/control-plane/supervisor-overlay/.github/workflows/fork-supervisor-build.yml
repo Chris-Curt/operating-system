@@ -42,8 +42,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! "${SUPERVISOR_VERSION}" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]*$ ]]; then
-            echo "::error::Invalid Supervisor version/tag: ${SUPERVISOR_VERSION}"
+          if [[ ! "${SUPERVISOR_VERSION}" =~ ^[0-9A-Za-z_][0-9A-Za-z_.-]{0,127}$ ]]; then
+            echo "::error::Invalid Docker-compatible Supervisor version/tag: ${SUPERVISOR_VERSION}"
             exit 1
           fi
           owner_lc="${GITHUB_REPOSITORY_OWNER,,}"

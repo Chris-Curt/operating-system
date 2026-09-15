@@ -80,9 +80,9 @@ jobs:
         run: |
           sudo rm -rf /usr/local/lib/android/sdk/ndk
           sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo mkdir -p /mnt/haos-output /mnt/haos-cache
-          sudo chown -R "$(id -u):$(id -g)" /mnt/haos-output /mnt/haos-cache
-          ln -s /mnt/haos-output "${GITHUB_WORKSPACE}/output"
+          sudo mkdir -p /mnt/haos-cache
+          sudo chown -R "$(id -u):$(id -g)" /mnt/haos-cache
+          mkdir -p "${GITHUB_WORKSPACE}/output"
           df -h
 
       - name: Build HAOS image

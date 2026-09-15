@@ -141,6 +141,7 @@ jobs:
           sudo rm -rf /usr/local/lib/android/sdk/ndk
           sudo rm -rf /opt/hostedtoolcache/CodeQL
           mkdir -p "${CACHE_DIR}/dl" "${CACHE_DIR}/cc" "${GITHUB_WORKSPACE}/output"
+          printf '%s\n' 'max_size = 2GiB' > "${CACHE_DIR}/cc/ccache.conf"
           df -h
 
       - name: Build HAOS image

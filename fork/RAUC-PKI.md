@@ -27,6 +27,15 @@ In GitHub unter `Settings -> Secrets and variables -> Actions` zwei Repository-S
 - `RAUC_CERTIFICATE_B64`: kompletter Inhalt von `.rauc-pki/RAUC_CERTIFICATE_B64.txt`
 - `RAUC_PRIVATE_KEY_B64`: kompletter Inhalt von `.rauc-pki/RAUC_PRIVATE_KEY_B64.txt`
 
+Mit bereits authentifizierter GitHub CLI können beide Secrets ohne Copy/Paste gesetzt werden:
+
+```bash
+gh secret set RAUC_CERTIFICATE_B64 --repo Chris-Curt/operating-system < .rauc-pki/RAUC_CERTIFICATE_B64.txt
+gh secret set RAUC_PRIVATE_KEY_B64 --repo Chris-Curt/operating-system < .rauc-pki/RAUC_PRIVATE_KEY_B64.txt
+```
+
+Die Dateien mit den Secret-Werten danach nicht verschicken oder committen. Der private Schlüssel und dessen Base64-Darstellung müssen wie Zugangsdaten behandelt werden.
+
 Der Fork-Workflow dekodiert beide Werte zu `cert.pem` und `key.pem`, prüft Zertifikat und Private Key sowie deren öffentlichen Schlüssel gegeneinander und löscht das Schlüsselmaterial nach dem Build wieder vom Runner.
 
 Die alten Secrets `RAUC_CERTIFICATE` und `RAUC_PRIVATE_KEY` werden vorerst weiter unterstützt. Für neue Setups sollen ausschließlich die Base64-Secrets verwendet werden.

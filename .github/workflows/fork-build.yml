@@ -25,15 +25,15 @@ jobs:
       matrix:
         include:
           - target: ova
-            output_dir: output_ova
+            make_target: ova
             artifact_name: haos-proxmox-qcow2
-            image_glob: output_ova/images/haos_ova-*.qcow2.xz
-            rauc_glob: output_ova/images/haos_ova-*.raucb
+            image_glob: output/images/haos_ova-*.qcow2.xz
+            rauc_glob: output/images/haos_ova-*.raucb
           - target: generic-x86-64
-            output_dir: output_generic_x86_64
+            make_target: generic_x86_64
             artifact_name: haos-usb-img
-            image_glob: output_generic_x86_64/images/haos_generic-x86-64-*.img.xz
-            rauc_glob: output_generic_x86_64/images/haos_generic-x86-64-*.raucb
+            image_glob: output/images/haos_generic-x86-64-*.img.xz
+            rauc_glob: output/images/haos_generic-x86-64-*.raucb
     env:
       CACHE_DIR: /mnt/haos-cache
 
@@ -75,28 +75,25 @@ jobs:
             echo "No persistent RAUC key configured; local HAOS build logic will use a development self-signed key."
           fi
 
-      - name: Free disk space and prepare build directories
+      - name: Free disk space and prepare build directory
         shell: bash
-        env:
-          OUTPUT_DIR: ${{ matrix.output_dir }}
         run: |
           sudo rm -rf /usr/local/lib/android/sdk/ndk
           sudo rm -rf /opt/hostedtoolcache/CodeQL
           sudo mkdir -p /mnt/haos-output /mnt/haos-cache
           sudo chown -R "$(id -u):$(id -g)" /mnt/haos-output /mnt/haos-cache
-          ln -s /mnt/haos-output "${GITHUB_WORKSPACE}/${OUTPUT_DIR}"
+          ln -s /mnt/haos-output "${GITHUB_WORKSPACE}/output"
           df -h
 
       - name: Build HAOS image
         shell: bash
-        run: bash fork/scripts/build-local.sh "${{ matrix.target }}" .
+        run: scripts/enter.sh make "${{ matrix.make_target }}"
 
       - name: Verify required artifacts
         shell: bash
         env:
           IMAGE_GLOB: ${{ matrix.image_glob }}
           RAUC_GLOB: ${{ matrix.rauc_glob }}
-          OUTPUT_DIR: ${{ matrix.output_dir }}
         run: |
           mapfile -t images < <(compgen -G "${IMAGE_GLOB}" || true)
           mapfile -t bundles < <(compgen -G "${RAUC_GLOB}" || true)
@@ -111,7 +108,7 @@ jobs:
           fi
 
           xz -t "${images[0]}"
-          sha256sum "${images[0]}" "${bundles[0]}" | tee "${OUTPUT_DIR}/SHA256SUMS"
+          sha256sum "${images[0]}" "${bundles[0]}" | tee output/SHA256SUMS
 
       - name: Upload install image and update bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -123,4 +120,4 @@ jobs:
           path: |
             ${{ matrix.image_glob }}
             ${{ matrix.rauc_glob }}
-            ${{ matrix.output_dir }}/SHA256SUMS
+            output/SHA256SUMS

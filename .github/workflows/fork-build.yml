@@ -72,13 +72,21 @@ jobs:
           fi
 
           if [[ "${RELEASE_PRERELEASE}" == "true" ]]; then
-            if [[ "${DEPLOYMENT}" != "staging" || ! "${VERSION_SUFFIX}" =~ ^rc[0-9]+$ ]]; then
-              echo "::error::Prerelease requires DEPLOYMENT=staging and VERSION_SUFFIX=rcN."
+            if [[ "${DEPLOYMENT}" != "staging" ]]; then
+              echo "::error::Prerelease requires DEPLOYMENT=staging."
+              exit 1
+            fi
+            if [[ ! "${VERSION_SUFFIX}" =~ ^rc[0-9]+$ ]]; then
+              echo "::error::Prerelease requires VERSION_SUFFIX=rcN."
               exit 1
             fi
           else
-            if [[ "${DEPLOYMENT}" != "production" || -n "${VERSION_SUFFIX}" ]]; then
-              echo "::error::Stable release requires DEPLOYMENT=production and an empty VERSION_SUFFIX."
+            if [[ "${DEPLOYMENT}" != "production" ]]; then
+              echo "::error::Stable release requires DEPLOYMENT=production."
+              exit 1
+            fi
+            if [[ -n "${VERSION_SUFFIX}" ]]; then
+              echo "::error::Stable release requires an empty VERSION_SUFFIX."
               exit 1
             fi
           fi
@@ -173,6 +181,14 @@ jobs:
           if [[ "${cert_pub}" != "${key_pub}" ]]; then
             echo "::error::RAUC certificate and private key do not belong together."
             exit 1
+          fi
+
+          if [[ "${EVENT_NAME}" == "release" ]]; then
+            min_validity_seconds=$((760 * 24 * 60 * 60))
+            if ! openssl x509 -in cert.pem -checkend "${min_validity_seconds}" -noout; then
+              echo "::error::RAUC signing certificate expires in less than 760 days; refusing release build."
+              exit 1
+            fi
           fi
 
           openssl x509 -in cert.pem -noout -subject -issuer -dates

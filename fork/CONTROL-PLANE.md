@@ -29,7 +29,7 @@ bash fork/scripts/setup-control-plane-forks.sh \
 
 Das Skript akzeptiert vorhandene Repositories nur, wenn GitHub sie als Fork des exakt erwarteten Home-Assistant-Repositories meldet. Es überschreibt keine gleichnamigen, unabhängigen Repositories.
 
-Erwartete Upstream-Branches zum Zeitpunkt dieser Fork-Linie:
+Erwartete Upstream-Branches für diese Fork-Linie:
 
 - `home-assistant/supervisor`: `main`
 - `home-assistant/version`: `master`
@@ -43,7 +43,7 @@ Für den Benutzer `Chris-Curt` ist die vorgesehene öffentliche Basis nach Erzeu
 https://raw.githubusercontent.com/Chris-Curt/version/master
 ```
 
-Diese Basis muss in HAOS und Supervisor gleichzeitig verwendet werden.
+Diese Basis muss in HAOS und Supervisor gemeinsam verwendet werden.
 
 ```bash
 bash fork/scripts/configure-control-plane.sh \
@@ -60,19 +60,42 @@ Das Skript ändert genau:
 
 Wenn eine der erwarteten Zuweisungen nach einem Upstream-Update nicht mehr eindeutig vorhanden ist, bricht das Skript ab. Änderungen in beiden Repositories gemeinsam reviewen und committen.
 
-## 3. Eigenen Supervisor zuerst veröffentlichen
+## 3. Sicheren amd64-Supervisor-Workflow installieren
 
-**Noch nicht auf die eigene Manifest-Quelle umschalten, solange kein eigener Supervisor-Container veröffentlicht und getestet wurde.**
+Für Proxmox/OVA und generic-x86-64 wird ausschließlich `amd64` benötigt. Der Overlay-Workflow übernimmt die sicherheitsrelevanten Teile des aktuellen Upstream-Builds:
 
-Das Manifest muss einen tatsächlich existierenden Supervisor-Tag unter folgendem Schema referenzieren:
+- lokale `musllinux_1_2`-Wheels für amd64,
+- Supervisor-Source-Hash,
+- keyless Cosign-Bundle für den Source-Hash,
+- Verifikation des offiziellen Home-Assistant-Base-Images,
+- Buildx/GitHub-Actions-Cache,
+- signierten GHCR-Container über den aktuellen Home-Assistant-Builder.
 
-```text
-ghcr.io/chris-curt/{arch}-hassio-supervisor
+Installation in den Supervisor-Fork:
+
+```bash
+bash fork/scripts/install-supervisor-overlay.sh \
+  --supervisor "$HOME/src/ha-fork/supervisor"
 ```
 
-Für die beiden unterstützten HAOS-Ziele ist `amd64` erforderlich. Der Supervisor-Upstream-Build erzeugt zusätzlich lokale Python-Wheels und signiert bei Publish-Builds den Supervisor-Code-Hash. Der Fork-Publish soll deshalb auf diesem Mechanismus aufbauen und nicht durch einen vereinfachten, unsignierten `docker build` ersetzt werden.
+Danach im Supervisor-Fork den neuen Workflow reviewen, committen und nach `main` bringen. Ein Publish wird absichtlich nur manuell mit einer expliziten Version gestartet, zum Beispiel:
 
-Der eigene Supervisor-Publish ist der nächste Control-Plane-Schritt nach dem stabilen HAOS-Buildpfad.
+```bash
+gh workflow run fork-supervisor-build.yml \
+  --repo Chris-Curt/supervisor \
+  --ref main \
+  -f version=YOUR_SUPERVISOR_VERSION
+```
+
+Der Workflow akzeptiert nur Docker-kompatible Tags und veröffentlicht:
+
+```text
+ghcr.io/chris-curt/amd64-hassio-supervisor:YOUR_SUPERVISOR_VERSION
+```
+
+Nach dem ersten Publish muss dieses GHCR-Package öffentlich lesbar sein, bevor ein HAOS-System im Manifest darauf verweist. Ein privates Package würde beim unauthentifizierten Container-Pull des installierten Systems scheitern.
+
+**Noch nicht auf die eigene Manifest-Quelle umschalten, solange dieser Container nicht erfolgreich veröffentlicht, öffentlich lesbar und geprüft wurde.**
 
 ## 4. Manifest für zwei Targets vorbereiten
 
@@ -108,7 +131,7 @@ ota:
 
 Die übrigen aktuellen Plugin- und Upgrade-Werte aus dem Quellmanifest bleiben erhalten.
 
-Für `beta` oder `dev` entsprechend `--channel beta` bzw. `--channel dev` verwenden und nur tatsächlich veröffentlichte HAOS-/Supervisor-Versionen eintragen.
+Für `beta` oder `dev` entsprechend `--channel beta` bzw. `--channel dev` verwenden und ausschließlich tatsächlich veröffentlichte HAOS-/Supervisor-Versionen eintragen.
 
 ## 5. Optional: eigener Core
 
@@ -136,14 +159,15 @@ Die sichere Reihenfolge ist:
 1. HAOS-Build für OVA und generic-x86-64 vollständig erfolgreich verifizieren.
 2. Dauerhafte RAUC-PKI konfigurieren und sichern.
 3. Guarded GitHub-Release-Pfad aktivieren und ein Test-/RC-Release erzeugen.
-4. Supervisor-Fork anlegen.
-5. Versions- und AppArmor-URLs im Supervisor-Fork umstellen.
-6. Eigenen amd64-Supervisor mit der Upstream-Integritätskette bauen und veröffentlichen.
-7. Version-Fork anlegen/aktualisieren und auf diesen realen Supervisor-Tag sowie reale HAOS-Release-Artefakte zeigen lassen.
-8. HAOS-Bootstrap auf dieselbe Version-Fork-URL umstellen.
-9. Neue HAOS-Installation in Proxmox testen: erster Boot, Supervisor, Core, AppArmor, Update-Prüfung.
-10. RAUC-Update von einer eigenen Version auf die nächste testen.
-11. Erst danach USB/Bare-Metal-Upgradepfad freigeben.
+4. Supervisor- und Version-Fork anlegen.
+5. Versions- und AppArmor-URLs im Supervisor-Fork vorbereiten.
+6. amd64-Supervisor-Overlay installieren und den eigenen Container bauen/signieren/veröffentlichen.
+7. GHCR-Supervisor-Package öffentlich lesbar machen und den exakten Tag verifizieren.
+8. Version-Fork auf diesen realen Supervisor-Tag sowie reale HAOS-Release-Artefakte setzen.
+9. HAOS-Bootstrap auf dieselbe Version-Fork-URL umstellen.
+10. Neue HAOS-Installation in Proxmox testen: erster Boot, Supervisor, Core, AppArmor, Update-Prüfung.
+11. RAUC-Update von einer eigenen Version auf die nächste testen.
+12. Erst danach USB/Bare-Metal-Upgradepfad freigeben.
 
 Damit gibt es zu keinem Zeitpunkt ein Manifest, das auf noch nicht existierende Images oder Bundles verweist.
 

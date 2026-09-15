@@ -35,7 +35,7 @@ jobs:
             image_glob: output/images/haos_generic-x86-64-*.img.xz
             rauc_glob: output/images/haos_generic-x86-64-*.raucb
     env:
-      CACHE_DIR: /mnt/haos-cache
+      CACHE_DIR: ${{ github.workspace }}/.haos-cache
 
     steps:
       - name: Checkout source
@@ -47,6 +47,29 @@ jobs:
       - name: Validate fork policy
         run: bash fork/scripts/policy-check.sh
 
+      - name: Compute Buildroot cache key
+        id: cache-key
+        shell: bash
+        run: |
+          echo "buildroot=$(git -C buildroot rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+
+      - name: Restore Buildroot download cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CACHE_DIR }}/dl
+          key: haos-dl-${{ runner.os }}-${{ steps.cache-key.outputs.buildroot }}-${{ hashFiles('buildroot-external/package/**/*.mk') }}
+          restore-keys: |
+            haos-dl-${{ runner.os }}-${{ steps.cache-key.outputs.buildroot }}-
+            haos-dl-${{ runner.os }}-
+
+      - name: Restore target compiler cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CACHE_DIR }}/cc
+          key: haos-cc-${{ runner.os }}-${{ matrix.target }}-${{ github.sha }}
+          restore-keys: |
+            haos-cc-${{ runner.os }}-${{ matrix.target }}-
+
       - name: Set unique development version
         shell: bash
         run: |
@@ -57,32 +80,67 @@ jobs:
       - name: Configure RAUC signing key when repository secrets exist
         shell: bash
         env:
+          RAUC_CERTIFICATE_B64: ${{ secrets.RAUC_CERTIFICATE_B64 }}
+          RAUC_PRIVATE_KEY_B64: ${{ secrets.RAUC_PRIVATE_KEY_B64 }}
           RAUC_CERTIFICATE: ${{ secrets.RAUC_CERTIFICATE }}
           RAUC_PRIVATE_KEY: ${{ secrets.RAUC_PRIVATE_KEY }}
         run: |
-          if [[ -n "${RAUC_CERTIFICATE}" && -z "${RAUC_PRIVATE_KEY}" ]] || \
-             [[ -z "${RAUC_CERTIFICATE}" && -n "${RAUC_PRIVATE_KEY}" ]]; then
+          set -euo pipefail
+
+          b64_cert_set=false
+          b64_key_set=false
+          legacy_cert_set=false
+          legacy_key_set=false
+          [[ -n "${RAUC_CERTIFICATE_B64}" ]] && b64_cert_set=true
+          [[ -n "${RAUC_PRIVATE_KEY_B64}" ]] && b64_key_set=true
+          [[ -n "${RAUC_CERTIFICATE}" ]] && legacy_cert_set=true
+          [[ -n "${RAUC_PRIVATE_KEY}" ]] && legacy_key_set=true
+
+          if [[ "${b64_cert_set}" != "${b64_key_set}" ]]; then
+            echo "::error::RAUC_CERTIFICATE_B64 and RAUC_PRIVATE_KEY_B64 must either both be configured or both be absent."
+            exit 1
+          fi
+          if [[ "${legacy_cert_set}" != "${legacy_key_set}" ]]; then
             echo "::error::RAUC_CERTIFICATE and RAUC_PRIVATE_KEY must either both be configured or both be absent."
             exit 1
           fi
+          if [[ "${b64_cert_set}" == true && "${legacy_cert_set}" == true ]]; then
+            echo "::error::Configure either the Base64 RAUC secrets or the legacy RAUC secrets, not both."
+            exit 1
+          fi
 
-          if [[ -n "${RAUC_CERTIFICATE}" ]]; then
+          if [[ "${b64_cert_set}" == true ]]; then
+            printf '%s' "${RAUC_CERTIFICATE_B64}" | base64 --decode > cert.pem
+            printf '%s' "${RAUC_PRIVATE_KEY_B64}" | base64 --decode > key.pem
+            echo "Using Base64 encoded repository RAUC signing key."
+          elif [[ "${legacy_cert_set}" == true ]]; then
             printf '%s\n' '-----BEGIN CERTIFICATE-----' "${RAUC_CERTIFICATE}" '-----END CERTIFICATE-----' > cert.pem
             printf '%s\n' '-----BEGIN PRIVATE KEY-----' "${RAUC_PRIVATE_KEY}" '-----END PRIVATE KEY-----' > key.pem
-            chmod 600 key.pem
-            echo "Using repository RAUC signing key."
+            echo "Using legacy repository RAUC signing key. Migrate to the *_B64 secrets."
           else
-            echo "No persistent RAUC key configured; local HAOS build logic will use a development self-signed key."
+            echo "No persistent RAUC key configured; HAOS will generate a development self-signed key for this build."
+            exit 0
           fi
+
+          chmod 600 key.pem
+          openssl x509 -in cert.pem -noout >/dev/null
+          openssl pkey -in key.pem -check -noout >/dev/null
+
+          cert_pub="$(openssl x509 -in cert.pem -pubkey -noout | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | cut -d' ' -f1)"
+          key_pub="$(openssl pkey -in key.pem -pubout -outform DER 2>/dev/null | sha256sum | cut -d' ' -f1)"
+          if [[ "${cert_pub}" != "${key_pub}" ]]; then
+            echo "::error::RAUC certificate and private key do not belong together."
+            exit 1
+          fi
+
+          openssl x509 -in cert.pem -noout -subject -issuer -dates
 
       - name: Free disk space and prepare build directory
         shell: bash
         run: |
           sudo rm -rf /usr/local/lib/android/sdk/ndk
           sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo mkdir -p /mnt/haos-cache
-          sudo chown -R "$(id -u):$(id -g)" /mnt/haos-cache
-          mkdir -p "${GITHUB_WORKSPACE}/output"
+          mkdir -p "${CACHE_DIR}/dl" "${CACHE_DIR}/cc" "${GITHUB_WORKSPACE}/output"
           df -h
 
       - name: Build HAOS image
@@ -121,3 +179,8 @@ jobs:
             ${{ matrix.image_glob }}
             ${{ matrix.rauc_glob }}
             output/SHA256SUMS
+
+      - name: Remove RAUC signing material
+        if: always()
+        shell: bash
+        run: rm -f cert.pem key.pem

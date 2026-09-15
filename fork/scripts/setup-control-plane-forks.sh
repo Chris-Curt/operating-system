@@ -46,6 +46,7 @@ done
 
 command -v gh >/dev/null || { echo "ERROR: GitHub CLI (gh) not found." >&2; exit 1; }
 command -v git >/dev/null || { echo "ERROR: git not found." >&2; exit 1; }
+command -v jq >/dev/null || { echo "ERROR: jq not found." >&2; exit 1; }
 gh auth status >/dev/null 2>&1 || { echo "ERROR: gh is not authenticated." >&2; exit 1; }
 
 OWNER="$(gh api user --jq '.login')"
@@ -68,7 +69,7 @@ ensure_fork() {
   local name="${upstream##*/}"
   local fork="${OWNER}/${name}"
   local local_dir="${WORKSPACE}/${name}"
-  local fork_json
+  local fork_json=""
   local is_fork
   local parent
 
@@ -88,13 +89,15 @@ ensure_fork() {
 
     # GitHub fork creation can be briefly asynchronous. Query a few times and
     # fail rather than cloning an unresolved or unrelated repository.
+    fork_json=""
     for _ in 1 2 3 4 5 6; do
       if fork_json="$(gh api "repos/${fork}" 2>/dev/null)"; then
         break
       fi
+      fork_json=""
       sleep 2
     done
-    [[ -n "${fork_json:-}" ]] || { echo "ERROR: Fork ${fork} did not become available." >&2; exit 1; }
+    [[ -n "${fork_json}" ]] || { echo "ERROR: Fork ${fork} did not become available." >&2; exit 1; }
 
     is_fork="$(jq -r '.fork' <<<"${fork_json}")"
     parent="$(jq -r '.parent.full_name // ""' <<<"${fork_json}")"

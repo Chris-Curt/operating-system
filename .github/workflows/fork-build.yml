@@ -48,7 +48,7 @@ jobs:
         run: bash fork/scripts/policy-check.sh
 
       - name: Compute Buildroot cache key
-        id: cache-key
+        id: cache_key
         shell: bash
         run: |
           echo "buildroot=$(git -C buildroot rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
@@ -57,9 +57,9 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CACHE_DIR }}/dl
-          key: haos-dl-${{ runner.os }}-${{ steps.cache-key.outputs.buildroot }}-${{ hashFiles('buildroot-external/package/**/*.mk') }}
+          key: haos-dl-${{ runner.os }}-${{ steps.cache_key.outputs.buildroot }}-${{ hashFiles('buildroot-external/package/**/*.mk') }}
           restore-keys: |
-            haos-dl-${{ runner.os }}-${{ steps.cache-key.outputs.buildroot }}-
+            haos-dl-${{ runner.os }}-${{ steps.cache_key.outputs.buildroot }}-
             haos-dl-${{ runner.os }}-
 
       - name: Restore target compiler cache

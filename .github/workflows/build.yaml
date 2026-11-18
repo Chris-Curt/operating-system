@@ -31,6 +31,29 @@ on:
           - stable
           - beta
           - dev
+  # The github context of a called workflow belongs to the caller, which can be any public repository.
+  # Steps using OIDC or other release privileges must be gated on publish_build, which checks the repository.
+  workflow_call:
+    inputs:
+      boards:
+        description: 'List of boards to build (comma separated identifiers)'
+        required: false
+        type: string
+      publish:
+        description: 'Publish build artifacts to R2 (not applicable to forks)'
+        required: false
+        type: boolean
+        default: false
+      run_tests:
+        description: 'Run tests after build'
+        required: false
+        type: boolean
+        default: true
+      hassio_channel:
+        description: 'Release channel to use (default, stable, beta or dev)'
+        required: false
+        type: string
+        default: default
 
 env:
   PYTHON_VERSION: "3.13"
@@ -119,6 +142,8 @@ jobs:
 
       - name: Get channel
         id: channel
+        env:
+          HASSIO_CHANNEL: ${{ inputs.hassio_channel }}
         run: |
           if [[ "${{ github.event_name }}" == "release" ]]; then
             if [[ "${{ github.event.release.prerelease }}" == "true" ]]; then
@@ -130,21 +155,23 @@ jobs:
             echo "channel=dev" >> "$GITHUB_OUTPUT"
           fi
 
-          if [[ "${{ inputs.hassio_channel }}" == "default" ]]; then
-            if [[ "${{ github.event_name }}" == "release" ]]; then
-              echo "hassio_channel_option=BR2_PACKAGE_HASSIO_CHANNEL_STABLE" >> "$GITHUB_OUTPUT"
-            else
-              echo "hassio_channel_option=BR2_PACKAGE_HASSIO_CHANNEL_DEV" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            if [[ "${{ inputs.hassio_channel }}" == "stable" ]]; then
-              echo "hassio_channel_option=BR2_PACKAGE_HASSIO_CHANNEL_STABLE" >> "$GITHUB_OUTPUT"
-            elif [[ "${{ inputs.hassio_channel }}" == "beta" ]]; then
-              echo "hassio_channel_option=BR2_PACKAGE_HASSIO_CHANNEL_BETA" >> "$GITHUB_OUTPUT"
-            elif [[ "${{ inputs.hassio_channel }}" == "dev" ]]; then
-              echo "hassio_channel_option=BR2_PACKAGE_HASSIO_CHANNEL_DEV" >> "$GITHUB_OUTPUT"
-            fi
-          fi
+          # Release events have no inputs
+          case "${HASSIO_CHANNEL:-default}" in
+            default)
+              if [[ "${{ github.event_name }}" == "release" ]]; then
+                echo "hassio_channel_option=BR2_PACKAGE_HASSIO_CHANNEL_STABLE" >> "$GITHUB_OUTPUT"
+              else
+                echo "hassio_channel_option=BR2_PACKAGE_HASSIO_CHANNEL_DEV" >> "$GITHUB_OUTPUT"
+              fi
+              ;;
+            stable) echo "hassio_channel_option=BR2_PACKAGE_HASSIO_CHANNEL_STABLE" >> "$GITHUB_OUTPUT" ;;
+            beta)   echo "hassio_channel_option=BR2_PACKAGE_HASSIO_CHANNEL_BETA" >> "$GITHUB_OUTPUT" ;;
+            dev)    echo "hassio_channel_option=BR2_PACKAGE_HASSIO_CHANNEL_DEV" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "::error::Unknown release channel '${HASSIO_CHANNEL}'. Channel must be 'default', 'stable', 'beta' or 'dev'."
+              exit 1
+              ;;
+          esac
 
       - name: Validate deployment and version against publish channel
         if: ${{ steps.check_publish.outputs.publish_build == 'true' }}
@@ -176,6 +203,9 @@ jobs:
       - name: Create build matrix
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         id: generate_matrix
+        env:
+          BOARDS: ${{ inputs.boards }}
+          RUN_TESTS: ${{ inputs.run_tests }}
         with:
           script: |
             const boards = require('./.github/workflows/matrix.json')
@@ -183,8 +213,8 @@ jobs:
               return { "board": boards }
             }
 
-            const boardFilter = "${{ github.event.inputs.boards }}"
-            const runTests = "${{ github.event.inputs.run_tests }}" === "true"
+            const boardFilter = process.env.BOARDS || ""
+            const runTests = process.env.RUN_TESTS === "true"
 
             if (boardFilter == "") {
               console.log("Run full build for all boards")
@@ -204,15 +234,15 @@ jobs:
             }
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Log in to the GitHub container registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
             registry: ghcr.io
             username: ${{ github.repository_owner }}
             password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and Push
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         id: build_haos_builder
         with:
           context: .
@@ -244,7 +274,7 @@ jobs:
           rm -f signing-cert.pem
 
       - name: Create signing key
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: steps.generate_signing_key.outcome == 'success'
         with:
           name: signing-key
@@ -271,7 +301,7 @@ jobs:
 
       - name: Setup Python version ${{ env.PYTHON_VERSION }}
         if: ${{ github.event_name != 'release' }}
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -297,7 +327,7 @@ jobs:
 
       - name: Get self-signed certificate from the prepare job
         if: ${{ needs.prepare.outputs.self_signed_cert == 'true' }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: signing-key
 
@@ -350,6 +380,18 @@ jobs:
           command: |
             make BR2_CHECK_DOTCONFIG_OPTS="--github-format --strip-path-prefix=/build/" linux-check-dotconfig
 
+      - name: Compute image digests
+        if: ${{ github.event_name == 'release' || needs.prepare.outputs.publish_build == 'true' }}
+        working-directory: output/images/
+        run: sha256sum haos_* > SHA256SUMS.${{ matrix.board.id }}
+
+      - name: Upload image digests artifact
+        if: ${{ github.event_name == 'release' || needs.prepare.outputs.publish_build == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sha256sums-${{ matrix.board.id }}
+          path: output/images/SHA256SUMS.${{ matrix.board.id }}
+
       - name: Upload artifacts
         if: ${{ github.event_name != 'release' && needs.prepare.outputs.publish_build == 'true' }}
         working-directory: output/images/
@@ -366,7 +408,7 @@ jobs:
 
       - name: Upload release assets
         if: ${{ github.event_name == 'release' }}
-        uses: shogo82148/actions-upload-release-asset@aaba0f56bdbc1071f4af234d5cb16055e8a400de # v1.10.4
+        uses: shogo82148/actions-upload-release-asset@73f83b114970a3485e1423ecc1fb93d887c9b096 # v1.10.7
         with:
           upload_url: ${{ github.event.release.upload_url }}
           asset_path: output/images/haos_*
@@ -387,10 +429,12 @@ jobs:
           key: haos-cc-${{ matrix.board.id }}-${{ github.run_id }}
 
       - name: Generate build summary
+        env:
+          HASSIO_CHANNEL: ${{ inputs.hassio_channel }}
         run: |
           echo "# ${{ matrix.board.id }} build summary" >> $GITHUB_STEP_SUMMARY
           echo "## Built-in OS components" >> $GITHUB_STEP_SUMMARY
-          echo "Release channel: ${{ inputs.hassio_channel }} (${{ needs.prepare.outputs.hassio_channel_option }})" >> $GITHUB_STEP_SUMMARY
+          echo "Release channel: ${HASSIO_CHANNEL} (${{ needs.prepare.outputs.hassio_channel_option }})" >> $GITHUB_STEP_SUMMARY
           echo "| Container | Version |" >> $GITHUB_STEP_SUMMARY
           echo "|:-|:-|" >> $GITHUB_STEP_SUMMARY
           supervisor_version=$(jq -r ".supervisor" output/build/hassio-*/version.json)
@@ -415,7 +459,7 @@ jobs:
           done
 
       - name: Upload OS image artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ github.event_name != 'release' && needs.prepare.outputs.publish_build != 'true' && matrix.board.id != 'ova' }}
         with:
           archive: false
@@ -424,7 +468,7 @@ jobs:
             output/images/haos_${{ matrix.board.id }}-${{ needs.prepare.outputs.version_full }}.img.xz
 
       - name: Upload RAUC bundle artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ github.event_name != 'release' && needs.prepare.outputs.publish_build != 'true' }}
         with:
           archive: false
@@ -433,7 +477,7 @@ jobs:
             output/images/haos_${{ matrix.board.id }}-${{ needs.prepare.outputs.version_full }}.raucb
 
       - name: Upload Open Virtualization Format (OVA) artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ github.event_name != 'release' && needs.prepare.outputs.publish_build != 'true' && matrix.board.id == 'ova' }}
         with:
           archive: false
@@ -442,7 +486,7 @@ jobs:
             output/images/haos_${{ matrix.board.id }}-${{ needs.prepare.outputs.version_full }}.ova
 
       - name: Upload QEMU disk image artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         # Create artifact for ova every time - it's used by the called tests workflow
         if: ${{ matrix.board.id == 'ova' || (github.event_name != 'release' && needs.prepare.outputs.publish_build != 'true' && matrix.board.id == 'generic-aarch64') }}
         with:
@@ -452,7 +496,7 @@ jobs:
             output/images/haos_${{ matrix.board.id }}-${{ needs.prepare.outputs.version_full }}.qcow2.xz
 
       - name: Upload VMware Virtual Machine Disk (VMDK) artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ github.event_name != 'release' && needs.prepare.outputs.publish_build != 'true' && (matrix.board.id == 'generic-aarch64' || matrix.board.id == 'ova') }}
         with:
           archive: false
@@ -461,7 +505,7 @@ jobs:
             output/images/haos_${{ matrix.board.id }}-${{ needs.prepare.outputs.version_full }}.vmdk.zip
 
       - name: Upload VirtualBox Virtual Disk Image (VDI) artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ github.event_name != 'release' && needs.prepare.outputs.publish_build != 'true' && matrix.board.id == 'ova' }}
         with:
           archive: false
@@ -470,7 +514,7 @@ jobs:
             output/images/haos_${{ matrix.board.id }}-${{ needs.prepare.outputs.version_full }}.vdi.zip
 
       - name: Upload Virtual Hard Disk v2 (VHDX) artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ github.event_name != 'release' && needs.prepare.outputs.publish_build != 'true' && matrix.board.id == 'ova' }}
         with:
           archive: false
@@ -486,10 +530,71 @@ jobs:
     with:
       version: ${{ needs.prepare.outputs.version_full }}
 
+  sign:
+    name: Sign image digests
+    if: ${{ github.event_name == 'release' || needs.prepare.outputs.publish_build == 'true' }}
+    needs: [ build, prepare ]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write  # for actions/upload-release-asset to upload release asset
+      id-token: write  # for cosign keyless signing
+
+    steps:
+      - name: Download image digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: sha256sums-*
+          merge-multiple: true
+
+      - name: Merge image digests
+        run: |
+          cat SHA256SUMS.* | sort -k 2 > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+
+      - name: Sign image digests
+        run: cosign sign-blob --yes SHA256SUMS --bundle SHA256SUMS.sigstore.json
+
+      - name: Setup Python version ${{ env.PYTHON_VERSION }}
+        if: ${{ github.event_name != 'release' }}
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install AWS CLI
+        if: ${{ github.event_name != 'release' }}
+        run: pip install 'awscli<1.37.0'
+
+      - name: Upload artifacts
+        if: ${{ github.event_name != 'release' }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_OS_ARTIFACTS_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_OS_ARTIFACTS_KEY }}
+        run: |
+          aws s3 sync \
+            ./ \
+            s3://${{ secrets.R2_OS_ARTIFACTS_BUCKET }}/${{ needs.prepare.outputs.version_full }}/ \
+            --exclude "*" \
+            --include "SHA256SUMS" \
+            --include "SHA256SUMS.sigstore.json" \
+            --endpoint-url ${{ secrets.R2_OS_ARTIFACTS_ENDPOINT }}
+
+      - name: Upload release assets
+        if: ${{ github.event_name == 'release' }}
+        uses: shogo82148/actions-upload-release-asset@73f83b114970a3485e1423ecc1fb93d887c9b096 # v1.10.7
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          overwrite: true
+          asset_path: |
+            SHA256SUMS
+            SHA256SUMS.sigstore.json
+
   update_index:
     name: Update artifacts index
     if: ${{ github.event_name != 'release' && needs.prepare.outputs.publish_build == 'true' }}
-    needs: [ build, prepare ]
+    needs: [ build, sign, prepare ]
     uses: home-assistant/operating-system/.github/workflows/artifacts-index.yaml@dev
     with:
       version: ${{ needs.prepare.outputs.version_full }}
@@ -505,7 +610,7 @@ jobs:
     name: Bump ${{ needs.prepare.outputs.channel }} channel version
     if: ${{ github.repository == 'home-assistant/operating-system' && needs.prepare.outputs.publish_build == 'true' && (needs.prepare.outputs.channel != 'dev' || github.ref == 'refs/heads/dev') }}
     environment: ${{ needs.prepare.outputs.channel }}
-    needs: [ build, prepare ]
+    needs: [ build, sign, prepare ]
     runs-on: ubuntu-22.04
 
     steps:

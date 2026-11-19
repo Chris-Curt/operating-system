@@ -33,7 +33,11 @@ haos-usb-img-<commit-sha>
 
 Markdown-only pushes are ignored to avoid expensive OS rebuilds. The workflow can also be started manually with `workflow_dispatch`.
 
-If both `RAUC_CERTIFICATE` and `RAUC_PRIVATE_KEY` repository secrets are configured, the automatic build uses them. If neither exists, HAOS development signing falls back to a local self-signed key. A single configured signing secret is treated as an error.
+The workflow persists the Buildroot download cache and keeps a target-specific compiler cache for `ova` and `generic-x86-64`. The compiler cache is capped at 2 GiB per target.
+
+For persistent RAUC signing, configure both `RAUC_CERTIFICATE_B64` and `RAUC_PRIVATE_KEY_B64` repository secrets. The workflow decodes and validates the certificate/key pair before building. If neither persistent secret exists, HAOS development signing falls back to a generated self-signed key. A partial or mismatched key configuration is treated as an error.
+
+The legacy `RAUC_CERTIFICATE` and `RAUC_PRIVATE_KEY` secrets are still accepted temporarily, but new installations should use the Base64 secrets. See [`fork/RAUC-PKI.md`](RAUC-PKI.md) for one-time key generation, GitHub CLI setup, backup requirements and safe key rotation.
 
 ## 3. Build locally
 
@@ -119,4 +123,4 @@ This fetches `home-assistant/operating-system` `dev`, rebases the current branch
 
 ## Signing note
 
-Development builds may use a generated self-signed RAUC certificate. Before distributing persistent production OTA updates, configure a stable RAUC certificate/private key in repository Actions secrets and protect the private key appropriately.
+Development builds may use a generated self-signed RAUC certificate. Before distributing persistent OTA updates, create and securely back up a stable fork PKI with `fork/scripts/generate-rauc-pki.sh`, then configure the two Base64 repository secrets described in `fork/RAUC-PKI.md`. Do not regenerate the signing key for each release.

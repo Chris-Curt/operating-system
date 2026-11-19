@@ -4,9 +4,11 @@
 # Build output dirs
 /release
 output*/
+/.haos-cache/
 
-# Certificates
+# Certificates and local fork PKI
 *.pem
+/.rauc-pki/
 
 # vscode generated files
 .vscode*
